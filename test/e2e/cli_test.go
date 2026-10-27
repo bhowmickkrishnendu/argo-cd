@@ -1,10 +1,13 @@
 package e2e
 
 import (
+	"bytes"
+	"context"
 	"crypto/x509"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -331,12 +334,17 @@ func TestCliCoreKubeConfigPersistence(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "argocd-config")
 	kubeConfigPath := filepath.Join(dir, "kubeconfig")
+	reachedAPI := make(chan string, 32)
 	// Stop at the Kubernetes API boundary, so this regression does not depend on
 	// core-mode repo-server pods being present in the e2e installation.
 	newKubeConfig := func(path string) *atomic.Int32 {
 		calls := &atomic.Int32{}
 		api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			calls.Add(1)
+			select {
+			case reachedAPI <- path:
+			default:
+			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusForbidden)
 			_, _ = w.Write([]byte(`{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"Forbidden","message":"core kubeconfig regression endpoint","code":403}`))
@@ -367,13 +375,36 @@ func TestCliCoreKubeConfigPersistence(t *testing.T) {
 
 	// Use another working directory and omit both --core and --kubeconfig.
 	workDir := t.TempDir()
-	_, err = Run(workDir, binary, "app", "list", "--config", configPath)
-	require.ErrorContains(t, err, "core kubeconfig regression endpoint")
+	runUntilAPI := func(wantPath string, flags ...string) {
+		t.Helper()
+		for len(reachedAPI) > 0 {
+			<-reachedAPI
+		}
+		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+		defer cancel()
+		args := append([]string{"app", "list", "--config", configPath}, flags...)
+		cmd := exec.CommandContext(ctx, binary, args...)
+		cmd.Dir = workDir
+		var output bytes.Buffer
+		cmd.Stdout = &output
+		cmd.Stderr = &output
+		require.NoError(t, cmd.Start())
+		var gotPath string
+		select {
+		case gotPath = <-reachedAPI:
+		case <-ctx.Done():
+		}
+		// The API deliberately rejects requests. Stop once configuration selection
+		// is observed instead of waiting for server informer retries.
+		cancel()
+		_ = cmd.Wait()
+		require.Equal(t, wantPath, gotPath, "CLI did not reach the selected API: %s", output.String())
+	}
+	runUntilAPI(kubeConfigPath)
 	assert.Positive(t, savedCalls.Load())
 	assert.Zero(t, overrideCalls.Load())
 	savedBeforeOverride := savedCalls.Load()
-	_, err = Run(workDir, binary, "app", "list", "--config", configPath, "--kubeconfig", overridePath)
-	require.ErrorContains(t, err, "core kubeconfig regression endpoint")
+	runUntilAPI(overridePath, "--kubeconfig", overridePath)
 	assert.Positive(t, overrideCalls.Load())
 	assert.Equal(t, savedBeforeOverride, savedCalls.Load())
 
@@ -382,7 +413,6 @@ func TestCliCoreKubeConfigPersistence(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "missing-override")
 
-	_, err = Run(workDir, binary, "app", "list", "--config", configPath)
-	require.ErrorContains(t, err, "core kubeconfig regression endpoint")
+	runUntilAPI(kubeConfigPath)
 	assert.Greater(t, savedCalls.Load(), savedBeforeOverride, "a one-off override must not replace the saved path")
 }
