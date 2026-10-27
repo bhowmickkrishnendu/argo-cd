@@ -5,6 +5,8 @@ name: Verify Helm documentation
     - verify/helm-environment-values
 permissions:
   contents: read
+env:
+  GOLANG_VERSION: 1.27.3
 jobs:
   documentation:
     runs-on: ubuntu-24.04
@@ -13,6 +15,7 @@ jobs:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
         persist-credentials: false
+        fetch-depth: 4
     - uses: actions/setup-python@v6
       with:
         python-version: '3.12'
@@ -32,9 +35,10 @@ jobs:
     - name: Validate Applications and rendered Helm examples
       run: python verification/validate_helm_docs.py
     - name: Check whitespace and DCO
-      run: 'git diff --check HEAD~1 HEAD
+      run: 'git diff --check 985a52860658b25650031990b2d3a15e72c21100 ce51dd5a8540518c333c6630ce8e5ef6e319e76a
 
-        git log -1 --format=''%B'' HEAD~1 | grep -F ''Signed-off-by: Krishnendu Bhowmick <65953142+bhowmickkrishnendu@users.noreply.github.com>'''
+        git log -1 --format=''%B'' ce51dd5a8540518c333c6630ce8e5ef6e319e76a | grep -F ''Signed-off-by: Krishnendu Bhowmick
+        <65953142+bhowmickkrishnendu@users.noreply.github.com>'''
     - name: Save verification evidence
       if: always()
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
