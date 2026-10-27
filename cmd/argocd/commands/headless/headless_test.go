@@ -255,10 +255,10 @@ func TestConfigureKubeConfigErrors(t *testing.T) {
 	})
 	t.Run("unknown Argo CD context", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "config")
-		require.NoError(t, localconfig.WriteLocalConfig(localconfig.LocalConfig{CurrentContext: "missing"}, path))
+		require.NoError(t, localconfig.WriteLocalConfig(localconfig.LocalConfig{}, path))
 		cmd := &cobra.Command{}
 		cli.AddKubectlFlagsToSet(cmd.Flags())
-		opts := &apiclient.ClientOptions{ConfigPath: path}
+		opts := &apiclient.ClientOptions{ConfigPath: path, Context: "missing"}
 		err := ConfigureKubeConfig(opts, cmd)
 		require.ErrorContains(t, err, "error resolving context")
 		assert.ErrorContains(t, err, "missing")
