@@ -353,9 +353,9 @@ func TestCliCoreKubeConfigPersistence(t *testing.T) {
 	assert.Contains(t, output, "NAME")
 
 	missingOverride := filepath.Join(dir, "missing-override")
-	output, err = Run(workDir, binary, "app", "list", "--config", configPath, "--kubeconfig", missingOverride)
+	_, err = Run(workDir, binary, "app", "list", "--config", configPath, "--kubeconfig", missingOverride)
 	require.Error(t, err)
-	assert.Contains(t, output, "missing-override")
+	assert.Contains(t, err.Error(), "missing-override")
 
 	output, err = Run(workDir, binary, "app", "list", "--config", configPath)
 	require.NoError(t, err, "a one-off override must not replace the saved path: %s", output)
