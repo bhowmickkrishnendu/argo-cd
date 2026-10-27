@@ -5,7 +5,6 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"sync/atomic"
@@ -53,9 +52,18 @@ func TestCliCoreKubeConfigPersistence(t *testing.T) {
 	overrideCalls := newKubeConfig(overridePath)
 	binary, err := filepath.Abs("../../dist/argocd")
 	require.NoError(t, err)
+	runCLI := func(workDir string, args ...string) (string, error) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, binary, args...)
+		cmd.Dir = workDir
+		output, err := cmd.CombinedOutput()
+		return string(output), err
+	}
 	// An unusable default makes reaching the endpoint prove that the saved file was used.
 	t.Setenv("KUBECONFIG", filepath.Join(dir, "missing-default"))
-	output, err := Run(dir, binary, "login", "--core", "--name", "custom-core", "--config", configPath, "--kubeconfig", "kubeconfig")
+	output, err := runCLI(dir, "login", "--core", "--name", "custom-core", "--config", configPath, "--kubeconfig", "kubeconfig")
 	require.NoError(t, err, "output: %s", output)
 	localCfg, err := localconfig.ReadLocalConfig(configPath)
 	require.NoError(t, err)
@@ -99,9 +107,9 @@ func TestCliCoreKubeConfigPersistence(t *testing.T) {
 	assert.Equal(t, savedBeforeOverride, savedCalls.Load())
 
 	missingOverride := filepath.Join(dir, "missing-override")
-	_, err = Run(workDir, binary, "app", "list", "--config", configPath, "--kubeconfig", missingOverride)
+	output, err = runCLI(workDir, "app", "list", "--config", configPath, "--kubeconfig", missingOverride)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "missing-override")
+	assert.Contains(t, output, "missing-override")
 
 	runUntilAPI(kubeConfigPath)
 	assert.Greater(t, savedCalls.Load(), savedBeforeOverride, "a one-off override must not replace the saved path")
