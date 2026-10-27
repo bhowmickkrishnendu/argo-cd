@@ -11,6 +11,7 @@ import (
 	. "github.com/argoproj/argo-cd/gitops-engine/v3/pkg/sync/common"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"k8s.io/client-go/tools/clientcmd"
 
 	. "github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1"
 	. "github.com/argoproj/argo-cd/v3/test/e2e/fixture"
@@ -320,4 +321,42 @@ func TestCliLoginPersistsClientCert(t *testing.T) {
 	output, err = RunCliWithConfigFile(configPath, "account", "get-user-info")
 	require.NoError(t, err, "output: %s", output)
 	assert.Contains(t, NormalizeOutput(output), "Logged In: true")
+}
+
+func TestCliCoreKubeConfigPersistence(t *testing.T) {
+	EnsureCleanState(t)
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "argocd-config")
+	kubeConfigPath := filepath.Join(dir, "kubeconfig")
+	kubeConfig, err := clientcmd.NewDefaultClientConfigLoadingRules().Load()
+	require.NoError(t, err)
+	require.Contains(t, kubeConfig.Contexts, kubeConfig.CurrentContext)
+	kubeConfig.Contexts[kubeConfig.CurrentContext].Namespace = ArgoCDNamespace
+	require.NoError(t, clientcmd.WriteToFile(*kubeConfig, kubeConfigPath))
+	binary, err := filepath.Abs("../../dist/argocd")
+	require.NoError(t, err)
+	// An unusable default makes a successful command prove that the saved file was used.
+	t.Setenv("KUBECONFIG", filepath.Join(dir, "missing-default"))
+	output, err := Run(dir, binary, "login", "--core", "--name", "custom-core", "--config", configPath, "--kubeconfig", "kubeconfig")
+	require.NoError(t, err, "output: %s", output)
+	localCfg, err := localconfig.ReadLocalConfig(configPath)
+	require.NoError(t, err)
+	core, err := localCfg.ResolveContext("custom-core")
+	require.NoError(t, err)
+	assert.Equal(t, kubeConfigPath, core.KubeConfigPath)
+
+	// Use another working directory and omit both --core and --kubeconfig.
+	workDir := t.TempDir()
+	output, err = Run(workDir, binary, "app", "list", "--config", configPath)
+	require.NoError(t, err, "output: %s", output)
+	assert.Contains(t, output, "NAME")
+
+	missingOverride := filepath.Join(dir, "missing-override")
+	output, err = Run(workDir, binary, "app", "list", "--config", configPath, "--kubeconfig", missingOverride)
+	require.Error(t, err)
+	assert.Contains(t, output, "missing-override")
+
+	output, err = Run(workDir, binary, "app", "list", "--config", configPath)
+	require.NoError(t, err, "a one-off override must not replace the saved path: %s", output)
 }
