@@ -29,15 +29,15 @@ func TestCliCoreKubeConfigPersistence(t *testing.T) {
 	// core-mode repo-server pods being present in the e2e installation.
 	newKubeConfig := func(path string) *atomic.Int32 {
 		calls := &atomic.Int32{}
-		api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		api := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 			calls.Add(1)
 			select {
 			case reachedAPI <- path:
 			default:
 			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusForbidden)
-			_, _ = w.Write([]byte(`{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"Forbidden","message":"core kubeconfig regression endpoint","code":403}`))
+			// Keep the first request open until the test stops the CLI process.
+			// This prevents retries or later startup requests from entering the next probe.
+			<-r.Context().Done()
 		}))
 		t.Cleanup(api.Close)
 		require.NoError(t, clientcmd.WriteToFile(clientcmdapi.Config{
@@ -84,8 +84,8 @@ func TestCliCoreKubeConfigPersistence(t *testing.T) {
 		case gotPath = <-reachedAPI:
 		case <-ctx.Done():
 		}
-		// The API deliberately rejects requests. Stop once configuration selection
-		// is observed instead of waiting for server informer retries.
+		// Stop once configuration selection is observed. The rest of core-mode
+		// server startup is outside this configuration regression.
 		cancel()
 		_ = cmd.Wait()
 		require.Equal(t, wantPath, gotPath, "CLI did not reach the selected API: %s", output.String())
