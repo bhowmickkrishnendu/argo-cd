@@ -1,0 +1,118 @@
+name: Verify Helm documentation
+'on':
+  push:
+    branches:
+    - verify/helm-environment-values
+permissions:
+  contents: read
+jobs:
+  documentation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - uses: actions/setup-python@v6
+      with:
+        python-version: '3.12'
+    - name: Install documentation tools
+      run: python -m pip install -r docs/requirements.txt jsonschema==4.21.1
+    - name: Install project-pinned Helm
+      run: ./hack/install.sh helm
+    - name: Build documentation
+      shell: bash
+      run: 'set -o pipefail
+
+        mkdir -p .verification
+
+        make build-docs-local 2>&1 | tee .verification/mkdocs-build.log'
+    - name: Download the documented chart
+      run: helm pull ingress-nginx --repo https://kubernetes.github.io/ingress-nginx --version 4.11.3 --destination .verification
+    - name: Validate Applications and rendered Helm examples
+      run: python verification/validate_helm_docs.py
+    - name: Check whitespace and DCO
+      run: 'git diff --check HEAD~1 HEAD
+
+        git log -1 --format=''%B'' HEAD~1 | grep -F ''Signed-off-by: Krishnendu Bhowmick <65953142+bhowmickkrishnendu@users.noreply.github.com>'''
+    - name: Save verification evidence
+      if: always()
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: helm-docs-verification
+        path: .verification/
+        retention-days: 7
+  codegen:
+    name: Check changes to generated code
+    runs-on: ubuntu-24.04
+    steps:
+    - name: Harden the runner (Audit all outbound calls)
+      if: ${{ vars.disable_harden_runner != 'true' }}
+      uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25
+      with:
+        egress-policy: audit
+    - name: Checkout code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - name: Setup Golang
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+      with:
+        go-version: ${{ env.GOLANG_VERSION }}
+    - name: Create symlink in GOPATH
+      run: 'mkdir -p ~/go/src/github.com/argoproj
+
+        cp -a ../${GITHUB_EVENT_REPOSITORY_NAME} ~/go/src/github.com/argoproj
+
+        '
+      env:
+        GITHUB_EVENT_REPOSITORY_NAME: ${{ github.event.repository.name }}
+    - name: Add ~/go/bin to PATH
+      run: 'echo "/home/runner/go/bin" >> $GITHUB_PATH
+
+        '
+    - name: Add /usr/local/bin to PATH
+      run: 'echo "/usr/local/bin" >> $GITHUB_PATH
+
+        '
+    - name: Download & vendor dependencies
+      run: '# We need to vendor go modules for codegen yet
+
+        go mod download
+
+        go mod vendor -v
+
+        '
+      working-directory: /home/runner/go/src/github.com/argoproj/${{ github.event.repository.name }}
+    - name: Install toolchain for codegen
+      run: 'make install-codegen-tools-local
+
+        make install-go-tools-local
+
+        '
+      working-directory: /home/runner/go/src/github.com/argoproj/${{ github.event.repository.name }}
+    - name: Add dist to PATH
+      run: 'echo "/home/runner/work/argo-cd/argo-cd/dist" >> $GITHUB_PATH
+
+        '
+    - name: Run codegen
+      run: 'set -x
+
+        GOPATH=$(go env GOPATH)
+
+        export GOPATH
+
+        git checkout -- go.mod go.sum
+
+        make codegen-local
+
+        '
+      working-directory: /home/runner/go/src/github.com/argoproj/${{ github.event.repository.name }}
+    - name: Check nothing has changed
+      run: 'set -xo pipefail
+
+        git diff --exit-code -- . '':!go.sum'' '':!go.mod'' '':!assets/swagger.json'' | tee codegen.patch
+
+        '
+      working-directory: /home/runner/go/src/github.com/argoproj/${{ github.event.repository.name }}
+    timeout-minutes: 60
