@@ -261,7 +261,7 @@ func TestConfigureKubeConfigErrors(t *testing.T) {
 		opts := &apiclient.ClientOptions{ConfigPath: path, Context: "missing"}
 		err := ConfigureKubeConfig(opts, cmd)
 		require.ErrorContains(t, err, "error resolving context")
-		assert.ErrorContains(t, err, "missing")
+		require.ErrorContains(t, err, "missing")
 		assert.False(t, opts.Core)
 	})
 	t.Run("flag rejects the selected path", func(t *testing.T) {
@@ -306,7 +306,7 @@ func TestMaybeStartLocalServerKubeConfig(t *testing.T) {
 		port := 8080
 		shutdown, err := MaybeStartLocalServer(t.Context(), opts, "", &port, nil, nil)
 		require.ErrorContains(t, err, "error creating client config")
-		assert.ErrorContains(t, err, path)
+		require.ErrorContains(t, err, path)
 		assert.Nil(t, shutdown)
 		assert.Equal(t, path, os.Getenv("KUBECONFIG"))
 	})
