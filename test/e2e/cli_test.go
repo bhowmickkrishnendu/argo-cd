@@ -2,8 +2,11 @@ package e2e
 
 import (
 	"crypto/x509"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -12,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/client-go/tools/clientcmd"
+	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
 	. "github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1"
 	. "github.com/argoproj/argo-cd/v3/test/e2e/fixture"
@@ -324,19 +328,34 @@ func TestCliLoginPersistsClientCert(t *testing.T) {
 }
 
 func TestCliCoreKubeConfigPersistence(t *testing.T) {
-	EnsureCleanState(t)
-
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "argocd-config")
 	kubeConfigPath := filepath.Join(dir, "kubeconfig")
-	kubeConfig, err := clientcmd.NewDefaultClientConfigLoadingRules().Load()
-	require.NoError(t, err)
-	require.Contains(t, kubeConfig.Contexts, kubeConfig.CurrentContext)
-	kubeConfig.Contexts[kubeConfig.CurrentContext].Namespace = ArgoCDNamespace
-	require.NoError(t, clientcmd.WriteToFile(*kubeConfig, kubeConfigPath))
+	// Stop at the Kubernetes API boundary, so this regression does not depend on
+	// core-mode repo-server pods being present in the e2e installation.
+	newKubeConfig := func(path string) *atomic.Int32 {
+		calls := &atomic.Int32{}
+		api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			calls.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"Forbidden","message":"core kubeconfig regression endpoint","code":403}`))
+		}))
+		t.Cleanup(api.Close)
+		require.NoError(t, clientcmd.WriteToFile(clientcmdapi.Config{
+			Clusters:       map[string]*clientcmdapi.Cluster{"cluster": {Server: api.URL}},
+			Contexts:       map[string]*clientcmdapi.Context{"context": {Cluster: "cluster", AuthInfo: "user", Namespace: "argocd"}},
+			AuthInfos:      map[string]*clientcmdapi.AuthInfo{"user": {}},
+			CurrentContext: "context",
+		}, path))
+		return calls
+	}
+	savedCalls := newKubeConfig(kubeConfigPath)
+	overridePath := filepath.Join(dir, "override-kubeconfig")
+	overrideCalls := newKubeConfig(overridePath)
 	binary, err := filepath.Abs("../../dist/argocd")
 	require.NoError(t, err)
-	// An unusable default makes a successful command prove that the saved file was used.
+	// An unusable default makes reaching the endpoint prove that the saved file was used.
 	t.Setenv("KUBECONFIG", filepath.Join(dir, "missing-default"))
 	output, err := Run(dir, binary, "login", "--core", "--name", "custom-core", "--config", configPath, "--kubeconfig", "kubeconfig")
 	require.NoError(t, err, "output: %s", output)
@@ -348,15 +367,22 @@ func TestCliCoreKubeConfigPersistence(t *testing.T) {
 
 	// Use another working directory and omit both --core and --kubeconfig.
 	workDir := t.TempDir()
-	output, err = Run(workDir, binary, "app", "list", "--config", configPath)
-	require.NoError(t, err, "output: %s", output)
-	assert.Contains(t, output, "NAME")
+	_, err = Run(workDir, binary, "app", "list", "--config", configPath)
+	require.ErrorContains(t, err, "core kubeconfig regression endpoint")
+	assert.Positive(t, savedCalls.Load())
+	assert.Zero(t, overrideCalls.Load())
+	savedBeforeOverride := savedCalls.Load()
+	_, err = Run(workDir, binary, "app", "list", "--config", configPath, "--kubeconfig", overridePath)
+	require.ErrorContains(t, err, "core kubeconfig regression endpoint")
+	assert.Positive(t, overrideCalls.Load())
+	assert.Equal(t, savedBeforeOverride, savedCalls.Load())
 
 	missingOverride := filepath.Join(dir, "missing-override")
 	_, err = Run(workDir, binary, "app", "list", "--config", configPath, "--kubeconfig", missingOverride)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "missing-override")
 
-	output, err = Run(workDir, binary, "app", "list", "--config", configPath)
-	require.NoError(t, err, "a one-off override must not replace the saved path: %s", output)
+	_, err = Run(workDir, binary, "app", "list", "--config", configPath)
+	require.ErrorContains(t, err, "core kubeconfig regression endpoint")
+	assert.Greater(t, savedCalls.Load(), savedBeforeOverride, "a one-off override must not replace the saved path")
 }
