@@ -1,0 +1,206 @@
+name: Verify Helm documentation build prerequisites
+'on':
+  push:
+    branches:
+    - verify/helm-build-checks
+permissions:
+  contents: read
+env:
+  GOLANG_VERSION: 1.27.3
+  STEP_SECURITY_HARDEN_RUNNER: ${{ vars.disable_harden_runner }}
+jobs:
+  build-go:
+    name: Build & cache Go code
+    runs-on: ubuntu-24.04
+    steps:
+    - name: Harden the runner (Audit all outbound calls)
+      if: ${{ vars.disable_harden_runner != 'true' }}
+      uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25
+      with:
+        egress-policy: audit
+    - name: Checkout code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - name: Setup Golang
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+      with:
+        go-version: ${{ env.GOLANG_VERSION }}
+        cache: false
+    - name: Restore go build and module cache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      with:
+        path: '~/.cache/go-build
+
+          ~/go/pkg/mod
+
+          '
+        key: ${{ runner.os }}-go-build-v1-${{ hashFiles('**/go.sum') }}
+        restore-keys: '${{ runner.os }}-go-build-v1-
+
+          '
+    - name: Download Go modules
+      run: 'go mod download
+
+        '
+    - name: Compile all packages
+      run: make build-local
+    - name: Build the CLI
+      run: make cli-local
+    timeout-minutes: 90
+  lint-go:
+    permissions:
+      contents: read
+      pull-requests: read
+    name: Lint Go code
+    runs-on: ubuntu-24.04
+    steps:
+    - name: Harden the runner (Audit all outbound calls)
+      if: ${{ vars.disable_harden_runner != 'true' }}
+      uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25
+      with:
+        egress-policy: audit
+    - name: Checkout code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - name: Setup Golang
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+      with:
+        go-version: ${{ env.GOLANG_VERSION }}
+    - name: Run golangci-lint
+      uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a
+      with:
+        version: v2.15.0
+        args: --verbose
+    timeout-minutes: 90
+  test-go:
+    name: Run unit tests for Go packages
+    runs-on: ubuntu-24.04
+    env:
+      GITHUB_TOKEN: ${{ secrets.E2E_TEST_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
+      GITLAB_TOKEN: ${{ secrets.E2E_TEST_GITLAB_TOKEN }}
+      ARGOCD_TEST_PARALLEL: '2'
+    steps:
+    - name: Harden the runner (Audit all outbound calls)
+      if: ${{ vars.disable_harden_runner != 'true' }}
+      uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25
+      with:
+        egress-policy: audit
+    - name: Create checkout directory
+      run: mkdir -p ~/go/src/github.com/argoproj
+    - name: Checkout code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - name: Create symlink in GOPATH
+      run: ln -s "$(pwd)" ~/go/src/github.com/argoproj/argo-cd
+    - name: Setup Golang
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+      with:
+        go-version: ${{ env.GOLANG_VERSION }}
+        cache: false
+    - name: Install required packages
+      run: 'sudo apt-get install git -y
+
+        '
+    - name: Switch to temporal branch so we re-attach head
+      run: 'git switch -c temporal-pr-branch
+
+        git status
+
+        '
+    - name: Fetch complete history for blame information
+      run: 'git fetch --prune --no-tags --depth=1 origin +refs/heads/*:refs/remotes/origin/*
+
+        '
+    - name: Add ~/go/bin to PATH
+      run: 'echo "/home/runner/go/bin" >> $GITHUB_PATH
+
+        '
+    - name: Add /usr/local/bin to PATH
+      run: 'echo "/usr/local/bin" >> $GITHUB_PATH
+
+        '
+    - name: Restore go build and module cache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      with:
+        path: '~/.cache/go-build
+
+          ~/go/pkg/mod
+
+          '
+        key: ${{ runner.os }}-go-build-v1-${{ hashFiles('**/go.sum') }}
+        restore-keys: '${{ runner.os }}-go-build-v1-
+
+          '
+    - name: Install all tools required for building & testing
+      run: 'make install-test-tools-local
+
+        '
+    - name: Add dist to PATH
+      run: 'echo "/home/runner/work/argo-cd/argo-cd/dist" >> $GITHUB_PATH
+
+        '
+    - name: Setup git username and email
+      run: 'git config --global user.name "John Doe"
+
+        git config --global user.email "john.doe@example.com"
+
+        '
+    - name: Download Go modules
+      run: 'go mod download
+
+        '
+    - name: Run all unit tests
+      run: make test-local
+    - name: Generate test results artifacts
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: test-results
+        path: test-results
+    needs:
+    - build-go
+    timeout-minutes: 90
+  build-ui:
+    name: Build, test & lint UI code
+    runs-on: ubuntu-24.04
+    steps:
+    - name: Harden the runner (Audit all outbound calls)
+      if: ${{ vars.disable_harden_runner != 'true' }}
+      uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25
+      with:
+        egress-policy: audit
+    - name: Checkout code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - name: Install pnpm
+      uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+      with:
+        package_json_file: ui/package.json
+    - name: Setup NodeJS
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+      with:
+        node-version: 24.22.1
+        cache: pnpm
+        cache-dependency-path: '**/pnpm-lock.yaml'
+    - name: Install node dependencies
+      run: 'cd ui && pnpm i --frozen-lockfile
+
+        '
+    - name: Build UI code
+      run: 'NODE_ENV=''test'' pnpm test
+
+        pnpm build
+
+        '
+      env:
+        NODE_ENV: production
+        NODE_ONLINE_ENV: online
+        CODECOV_TOKEN: ${{ github.ref == 'refs/heads/master' && secrets.CODECOV_TOKEN || '' }}
+      working-directory: ui/
+    - name: Run ESLint
+      run: pnpm lint
+      working-directory: ui/
+    timeout-minutes: 90
