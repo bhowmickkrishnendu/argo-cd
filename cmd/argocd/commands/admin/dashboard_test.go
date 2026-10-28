@@ -71,7 +71,7 @@ func writeDashboardKubeConfig(t *testing.T, host string) string {
 	require.NoError(t, clientcmd.WriteToFile(clientcmdapi.Config{
 		Clusters:       map[string]*clientcmdapi.Cluster{"cluster": {Server: host}},
 		Contexts:       map[string]*clientcmdapi.Context{"context": {Cluster: "cluster", AuthInfo: "user", Namespace: "argocd"}},
-		AuthInfos:      map[string]*clientcmdapi.AuthInfo{"user": {}},
+		AuthInfos:      map[string]*clientcmdapi.AuthInfo{"user": {Token: "test-token"}},
 		CurrentContext: "context",
 	}, path))
 	return path

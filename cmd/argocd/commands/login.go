@@ -84,7 +84,7 @@ argocd login cd.argoproj.io --core
 argocd login --core --name k3s --kubeconfig /etc/rancher/k3s/k3s.yaml`,
 		PreRunE: func(c *cobra.Command, _ []string) error {
 			if !clientOpts.Core && (c.Flags().Changed("kubeconfig") || clientOpts.KubeConfigPath != "") {
-				return fmt.Errorf("--kubeconfig requires --core")
+				return stderrors.New("--kubeconfig requires --core")
 			}
 			if clientOpts.Core && clientOpts.KubeConfigPath != "" {
 				info, err := os.Stat(clientOpts.KubeConfigPath)
